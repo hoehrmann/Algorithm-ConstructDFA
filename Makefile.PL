@@ -2,6 +2,7 @@ use 5.012000;
 use ExtUtils::MakeMaker;
 
 WriteMakefile(
+  MIN_PERL_VERSION  => 5.012000,
   NAME              => 'Algorithm::ConstructDFA',
   VERSION_FROM      => 'lib/Algorithm/ConstructDFA.pm',
   PREREQ_PM         => {

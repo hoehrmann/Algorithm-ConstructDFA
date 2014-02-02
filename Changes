@@ -1,4 +1,10 @@
 Revision history for Perl extension Algorithm::ConstructDFA.
 
+0.02  February 2014
+  - Slight speedup for nullable check.
+    Memoize is slower than expected.
+  - Fixed bug in $all_reachable_and_self routine
+  - Minor documentation fixes
+
 0.01  January 2014
 	- original version

@@ -10,7 +10,7 @@ use List::MoreUtils qw/uniq/;
 use Data::AutoBimap;
 use Memoize;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 our %EXPORT_TAGS = ( 'all' => [ qw(
 	construct_dfa
@@ -39,21 +39,24 @@ sub _get_graph {
     !!$acceptingf->(map { $m->n2s($_) } @_)
   });
   
-  my $nullable = memoize(sub {
-    !!$nullablef->($m->n2s($_[0]))
-  });
+  my %nullable;
+  
+  my $nullable = sub {
+    $nullable{$_[0]} //= !!$nullablef->($m->n2s($_[0]));
+    return $nullable{$_[0]};
+  };
 
-  my $all_reachable_and_self = sub {
+  my $all_reachable_and_self = memoize(sub {
     my ($v) = @_;
     my %seen;
     my @todo = ($v);
     while (@todo) {
       my $c = pop @todo;
       next if $seen{$c}++;
-      push @todo, $successors->($v) if $nullable->($c);
+      push @todo, $successors->($c) if $nullable->($c);
     }
     keys %seen;
-  };
+  });
   
   my $root_id = $m->s2n($root);
   my $start = [ $root_id ];
@@ -182,11 +185,11 @@ Algorithm::ConstructDFA - Deterministic finite automaton construction
     start        => $start_vertex,
     is_accepting => sub { grep { $_ eq $final_vertex } @_ },
     is_nullable  => sub {
-      $g->has_graph_attribute($_[0], 'label')
+      $g->has_vertex_attribute($_[0], 'label')
     },
     successors   => sub { $g->successors($_[0]) },
     get_label    => sub {
-      $g->get_graph_attribute($_[0], 'label') // ''
+      $g->get_vertex_attribute($_[0], 'label') // ''
     },
   );
 
