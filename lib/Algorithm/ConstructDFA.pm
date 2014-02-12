@@ -10,7 +10,7 @@ use List::MoreUtils qw/uniq/;
 use Data::AutoBimap;
 use Memoize;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 our %EXPORT_TAGS = ( 'all' => [ qw(
 	construct_dfa
@@ -24,29 +24,40 @@ our @EXPORT = qw(
 
 local $Storable::canonical = 1;
 
+sub _memoizess {
+  my ($sub) = @_;
+  my %cache;
+  return sub {
+    my ($s) = @_;
+    if (not exists $cache{$s}) {
+      $cache{$s} = $sub->($s);
+    }
+    return $cache{$s};
+  };
+}
+
 sub _get_graph {
-  my ($root, $labelf, $nullablef, $successorsf, $acceptingf) = @_;
+  my ($roots, $labelf, $nullablef, $successorsf, $acceptingf) = @_;
 
   my $m = Data::AutoBimap->new();
   
-  my $label = memoize(sub { $labelf->($m->n2s($_[0])) });
+  my $label = _memoizess(sub { $labelf->($m->n2s($_[0])) });
 
   my $successors = memoize(sub {
     map { $m->s2n($_) } $successorsf->($m->n2s($_[0]))
   });
 
-  my $accepting = memoize(sub {
+  my $accepting = sub {
     !!$acceptingf->(map { $m->n2s($_) } @_)
-  });
+  };
   
   my %nullable;
   
-  my $nullable = sub {
-    $nullable{$_[0]} //= !!$nullablef->($m->n2s($_[0]));
-    return $nullable{$_[0]};
-  };
+  my $nullable = _memoizess(sub {
+    !!$nullablef->($m->n2s($_[0]));
+  });
 
-  my $all_reachable_and_self = memoize(sub {
+  my $all_reachable_and_self = _memoizess(sub {
     my ($v) = @_;
     my %seen;
     my @todo = ($v);
@@ -55,16 +66,29 @@ sub _get_graph {
       next if $seen{$c}++;
       push @todo, $successors->($c) if $nullable->($c);
     }
-    keys %seen;
+    [keys %seen];
   });
   
-  my $root_id = $m->s2n($root);
-  my $start = [ $root_id ];
+  my $all_reachable_and_self_many = sub {
+    my %seen;
+    my @todo = (@_);
+    while (@todo) {
+      my $c = pop @todo;
+      next if $seen{$c}++;
+      push @todo, $successors->($c) if $nullable->($c);
+    }
+    keys %seen;
+  };
 
-  $start = [sort { $a cmp $b } uniq
-    $all_reachable_and_self->($root_id)]
-      if $nullable->($root_id);
-      
+  my $start = [
+    sort { $a cmp $b }
+    uniq map {
+      $nullable->($_) ? @{ $all_reachable_and_self->($_) } : $_
+    }
+    map { $m->s2n($_) }
+    @$roots
+  ];
+
   my $start_s = join ' ', @$start;
     
   my @todo = ($start);
@@ -83,15 +107,13 @@ sub _get_graph {
     my $src_accepts = $accepting->(@src);
     push @accepting_dfa_states, $src_s if $src_accepts;
     
-    my %p = partition_by { $label->($_) } @src;
+    my %p = partition_by { $label->($_) }
+      grep { defined $label->($_) } @src;
     
     while (my ($k, $v) = each %p) {
-      my @dst = sort { $a cmp $b } uniq map {
-        $all_reachable_and_self->($_)
-      } map {
-        $successors->($_)
-      } @$v;
-
+      my @dst = sort { $a cmp $b } uniq 
+      $all_reachable_and_self_many->(map { $successors->($_) } @$v);
+      
       push @todo, \@dst;
       my $dst_s = join ' ', @dst;
       $dfa->{$src_s}->{$k} = $dst_s;
@@ -124,29 +146,33 @@ sub _get_graph {
   $o->s2n($start_s);
 
   while (my ($src, $x) = each %$dfa) {
+
+    # Merge dead states
+    $src = '' unless $reachable{$src};
+
+    my @src_combines = map { $m->n2s($_) } split/ /, $src;
+    $r->{$o->s2n($src)}{Combines} //= \@src_combines;
+    $r->{$o->s2n($src)}{Combines} = [ sort { $a cmp $b }
+      uniq (@{$r->{$o->s2n($src)}{Combines} // []}, @src_combines) ]
+        if $src eq '';
+
+    $r->{$o->s2n($src)}{Accepts} //=
+      0 + $accepting->(split/ /, $src);
+
     while (my ($k, $dst) = each %{$x}) {
     
-      # Merge dead states
-      $src = '' unless $reachable{$src};
       $dst = '' unless $reachable{$dst};
       
       $r->{$o->s2n($src)}{NextOver}{$k} = $o->s2n($dst);
 
-      my @src_combines = map { $m->n2s($_) } split/ /, $src;
-      my @dst_combines = map { $m->n2s($_) } split/ /, $dst;
-      
-      $r->{$o->s2n($src)}{Combines} //= \@src_combines;
-      $r->{$o->s2n($src)}{Combines} = [ sort { $a cmp $b }
-        uniq (@{$r->{$o->s2n($src)}{Combines} // []}, @src_combines) ]
-          if $src eq '';
-      
-      $r->{$o->s2n($dst)}{Combines} //= \@dst_combines;
-      $r->{$o->s2n($dst)}{Combines} = [ sort { $a cmp $b }
-        uniq (@{$r->{$o->s2n($dst)}{Combines} // []}, @dst_combines) ]
-          if $dst eq '';
+      if ((not defined $r->{$o->s2n($dst)}{Combines}) or $dst eq '') {
+        my @dst_combines = map { $m->n2s($_) } split/ /, $dst;
+        $r->{$o->s2n($dst)}{Combines} //= \@dst_combines;
+        $r->{$o->s2n($dst)}{Combines} = [ sort { $a cmp $b }
+          uniq (@{$r->{$o->s2n($dst)}{Combines} // []}, @dst_combines) ]
+            if $dst eq '';
+      }
 
-      $r->{$o->s2n($src)}{Accepts} //=
-        0 + $accepting->(split/ /, $src);
       $r->{$o->s2n($dst)}{Accepts} //=
         0 + $accepting->(split/ /, $dst);
     }
@@ -159,10 +185,18 @@ sub construct_dfa {
   my (%o) = @_;
 
   die unless ref $o{is_nullable};
-  die unless ref $o{is_accepting};
+  die unless ref $o{is_accepting} or exists $o{final};
   die unless ref $o{successors};
   die unless ref $o{get_label};
   die unless exists $o{start};
+  die if ref $o{is_accepting} and exists $o{final};
+
+  if (exists $o{final}) {
+    my %in_final = map { $_ => 1 } @{ $o{final} };
+    $o{is_accepting} = sub {
+      grep { $in_final{$_} } @_
+    };
+  }
 
   _get_graph($o{start}, $o{get_label}, $o{is_nullable},
     $o{successors}, $o{is_accepting});
@@ -182,14 +216,14 @@ Algorithm::ConstructDFA - Deterministic finite automaton construction
 
   use Algorithm::ConstructDFA;
   my $dfa = construct_dfa(
-    start        => $start_vertex,
+    start        => [ $start_vertex ],
     is_accepting => sub { grep { $_ eq $final_vertex } @_ },
     is_nullable  => sub {
       $g->has_vertex_attribute($_[0], 'label')
     },
     successors   => sub { $g->successors($_[0]) },
     get_label    => sub {
-      $g->get_vertex_attribute($_[0], 'label') // ''
+      $g->get_vertex_attribute($_[0], 'label')
     },
   );
 
@@ -212,7 +246,13 @@ Construct a DFA using the given options.
 
 =item start
 
-A start state for the initial configuration of the automaton.
+An array of start states for the initial configuration of the
+automaton.
+
+=item final
+
+An array of final accepting states. This can be used instead
+of specifying a subroutine in C<is_accepting>.
 
 =item is_accepting
 
@@ -236,7 +276,8 @@ the given vertex.
 =item get_label
 
 A subroutine that returns a caller-defined string representing what
-kind of input is expected to move past the supplied vertex.
+kind of input is expected to move past the supplied vertex. Can also
+be C<undef> for vertices without label.
 
 =back
 
@@ -275,7 +316,7 @@ unreachable as before). This can be useful to compute complement graphs.
 
 =head1 EXPORTS
 
-The function C<construct_dfa> by default.
+The functions C<construct_dfa> and C<construct_dfa_as_graph> by default.
 
 =head1 AUTHOR / COPYRIGHT / LICENSE
 

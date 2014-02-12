@@ -34,10 +34,11 @@ for (1 .. 30) {
     is_nullable  => sub {
       not $g->has_vertex_attribute($_[0], 'label')
     },
-    is_accepting => sub { grep { $_ eq $final } @_ },
+#    is_accepting => sub { grep { $_ eq $final } @_ },
+    final => [ $final ],
     successors   => sub { $g->successors($_[0]) },
     get_label    => sub { $g->get_vertex_attribute($_[0], 'label') // '' },
-    start        => $start,
+    start        => [ $start ],
   );
   
   my $dfa_g = Graph::Directed->new;
@@ -99,6 +100,7 @@ for (1 .. 30) {
         grep { $g1->has_vertex_attribute($_, 'label') }
         @path[0 .. $#path - 1];
 
+#      use YAML::XS;
 #      warn Dump { path => \@path, word => join('/', @word),  };
         
       my @word_copy = @word;
@@ -135,35 +137,12 @@ for (1 .. 30) {
       $tests++;
       
       next;
-
-=pod      
-#      warn Dump { state => \@state, };
-      do {
-        warn "g2 s2 label ($start2): " . $g2->get_vertex_attribute($start2, 'label');
-        print Dump $dfa;
-        use Graph::Easy;
-        use Graph::Convert;
-        my $easy = Graph::Convert->as_graph_easy($g2);
-#        $copy->set_vertex_attribute($_, 'label', $graph->get_vertex_attribute($_, 'label'))
-#          for grep { $graph->has_vertex_attribute($_, 'label') } $g2->vertices;
-        open my $t, '>', 'x.dot';
-        print $t $easy->as_graphviz;
-
-        my $easy2 = Graph::Convert->as_graph_easy($g1);
-#        $copy->set_vertex_attribute($_, 'label', $graph->get_vertex_attribute($_, 'label'))
-#          for grep { $graph->has_vertex_attribute($_, 'label') } $g2->vertices;
-        open my $t2, '>', 'x2.dot';
-        print $t2 $easy2->as_graphviz;
-
-        warn "!!!!!!!!!!!!! (final: $final, start: $start) (final2: $final2, start2: $start2)";
-        die if @word_copy < 3;
-        die;
-      } unless $matches;
-=cut
-
     }
   }
   
 }
 
 done_testing($tests);
+
+
+
